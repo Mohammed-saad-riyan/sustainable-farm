@@ -5,6 +5,9 @@ from sklearn.preprocessing import LabelEncoder
 import joblib
 from sklearn.ensemble import RandomForestRegressor
 from datetime import datetime
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import mean_squared_error, accuracy_score
 
 df = pd.read_csv('sustainable_farming_dataset.csv')
 
@@ -142,84 +145,239 @@ def get_pesticide_recommendation(current_pesticide, pesticide_category, crop, se
     
     return recommendations
 
-def predict_yield(crop, soil_type, season, organic_matter, soil_ph, 
+def train_yield_prediction_model():
+    """Train model to predict crop yield"""
+    try:
+        df = pd.read_csv('sustainable_farming_dataset.csv')
+        print("Dataset loaded successfully")
+        
+        # Separate categorical and numerical features
+        categorical_features = [
+            'Current_Crop',
+            'Soil_Type',
+            'Season',
+            'Fertilizer_Category',
+            'Irrigation_Type'
+        ]
+        
+        numerical_features = [
+            'Organic_Matter_Content(%)',
+            'Soil_pH',
+            'Water_Usage(cubic meters)',
+            'Rotation_Health_Score',
+            'Fertilizer_Used(tons)',
+            'Pesticide_Used(kg)'
+        ]
+        
+        # Initialize transformers
+        le_dict = {}  # Dictionary to store a LabelEncoder for each categorical column
+        
+        # Encode each categorical column separately
+        for col in categorical_features:
+            le_dict[col] = LabelEncoder()
+            df[col] = le_dict[col].fit_transform(df[col])
+        
+        # Scale numerical features
+        scaler = StandardScaler()
+        df[numerical_features] = scaler.fit_transform(df[numerical_features])
+        
+        # Combine features
+        X = df[categorical_features + numerical_features]
+        y = df['Yield(tons)']
+        
+        # Train model
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X, y)
+        
+        # Print model performance
+        train_score = model.score(X, y)
+        print(f"Model R² score: {train_score:.3f}")
+        
+        return model, le_dict, scaler
+        
+    except Exception as e:
+        print(f"Error in training model: {str(e)}")
+        print(f"Available columns in dataset: {df.columns.tolist()}")
+        raise
+
+def train_crop_recommendation_model():
+    """Train model to recommend next crop"""
+    try:
+        df = pd.read_csv('sustainable_farming_dataset.csv')
+        
+        # Use exact column names from dataset
+        features = [
+            'Current_Crop',  # Changed from current_crop
+            'Previous_Crop_1',
+            'Previous_Crop_2',
+            'Previous_Crop_3',
+            'Soil_Type',
+            'Season',
+            'Organic_Matter_Content(%)',
+            'Soil_pH',
+            'Fertilizer_Category',
+            'Pesticide_Category',
+            'Irrigation_Type'
+        ]
+        
+        # Encode categorical variables
+        le = LabelEncoder()
+        categorical_cols = [
+            'Current_Crop',
+            'Previous_Crop_1',
+            'Previous_Crop_2',
+            'Previous_Crop_3',
+            'Soil_Type',
+            'Season',
+            'Fertilizer_Category',
+            'Pesticide_Category',
+            'Irrigation_Type'
+        ]
+        
+        # Create a copy of the dataframe to avoid modifying the original
+        X = df[features].copy()
+        y = df['Current_Crop'].copy()  # Target is current crop to predict next crop
+        
+        # Encode categorical variables
+        for col in categorical_cols:
+            X[col] = le.fit_transform(X[col])
+        
+        # Train model
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X, y)
+        
+        return model, le
+        
+    except Exception as e:
+        print(f"Error in training crop recommendation model: {str(e)}")
+        print(f"Available columns in dataset: {df.columns.tolist()}")
+        raise
+
+def calculate_rotation_score(current_crop, prev1, prev2, prev3):
+    """Calculate rotation health score based on crop diversity"""
+    crops = [current_crop, prev1, prev2, prev3]
+    unique_crops = len(set(crops))
+    # Score from 0-100 based on crop diversity
+    return (unique_crops / 4) * 100
+
+def calculate_water_usage(farm_area, irrigation_type):
+    """Estimate water usage based on irrigation type and farm area"""
+    # Base water usage per acre (cubic meters)
+    base_usage = {
+        'Drip': 3000,
+        'Sprinkler': 4000,
+        'Flood': 6000,
+        'Manual': 4500,
+        'Rain-fed': 2000
+    }
+    return base_usage.get(irrigation_type, 4000) * farm_area
+
+def calculate_fertilizer_usage(farm_area, category):
+    """Estimate fertilizer usage based on farm area and category"""
+    # Base fertilizer usage per acre (tons)
+    base_usage = {
+        'Chemical': 0.5,
+        'Organic': 1.2,
+        'Mixed': 0.8
+    }
+    return base_usage.get(category, 0.8) * farm_area
+
+def calculate_pesticide_usage(farm_area, category):
+    """Estimate pesticide usage based on farm area and category"""
+    # Base pesticide usage per acre (kg)
+    base_usage = {
+        'Chemical': 2.0,
+        'Organic': 3.0,
+        'Mixed': 2.5
+    }
+    return base_usage.get(category, 2.5) * farm_area
+
+def calculate_weather_impact(temperature, rainfall_level):
+    """Calculate weather impact on yield (0-1 scale)"""
+    # Optimal temperature range for most crops
+    optimal_temp_min = 15
+    optimal_temp_max = 30
+    
+    # Temperature impact (0-1)
+    if optimal_temp_min <= temperature <= optimal_temp_max:
+        temp_impact = 1.0
+    else:
+        temp_impact = max(0, 1 - abs(temperature - optimal_temp_max) / 20)
+    
+    # Rainfall impact (0-1)
+    rainfall_impact = {
+        'Low': 0.6,
+        'Moderate': 1.0,
+        'High': 0.8
+    }
+    
+    # Combined impact
+    weather_impact = (temp_impact + rainfall_impact.get(rainfall_level, 0.7)) / 2
+    return round(weather_impact, 2)
+
+def predict_yield(current_crop, soil_type, season, organic_matter, soil_ph,
                  fertilizer_category, irrigation_type, farm_area,
-                 temperature, rainfall_level, water_ph, salinity_level):
-    """Enhanced yield prediction including weather and water quality"""
-    
-    # Base yield ranges (tons per acre)
-    base_yields = {
-        'Rice': {'min': 2.5, 'max': 4.0},
-        'Wheat': {'min': 1.8, 'max': 3.5},
-        'Cotton': {'min': 0.8, 'max': 1.5},
-        'Maize': {'min': 2.0, 'max': 3.8},
-        'Sugarcane': {'min': 25.0, 'max': 35.0},
-        'Potato': {'min': 8.0, 'max': 12.0},
-        'Soybean': {'min': 1.2, 'max': 2.5}
-    }
-    
-    if crop not in base_yields:
-        return "Yield prediction not available for this crop"
-    
-    # Start with base yield
-    base_yield = (base_yields[crop]['min'] + base_yields[crop]['max']) / 2
-    
-    # Soil type impact
-    soil_factors = {
-        'Loamy': 1.2,
-        'Clay': 1.0,
-        'Sandy': 0.8,
-        'Silty': 1.1,
-        'Peaty': 0.9
-    }
-    adjusted_yield = base_yield * soil_factors.get(soil_type, 1.0)
-    
-    # Season impact
-    season_factors = {
-        'Kharif': 1.0,
-        'Rabi': 0.9,
-        'Zaid': 0.8
-    }
-    adjusted_yield *= season_factors.get(season, 1.0)
-    
-    # Organic matter impact
-    if organic_matter < 2:
-        adjusted_yield *= 0.8
-    elif organic_matter > 4:
-        adjusted_yield *= 1.2
-    
-    # Soil pH impact
-    if soil_ph < 5.5 or soil_ph > 7.5:
-        adjusted_yield *= 0.9
-    
-    # Fertilizer impact
-    fertilizer_factors = {
-        'Chemical': 1.0,
-        'Organic': 0.9,
-        'Mixed': 0.95
-    }
-    adjusted_yield *= fertilizer_factors.get(fertilizer_category, 1.0)
-    
-    # Irrigation impact
-    adjusted_yield *= irrigation_efficiency.get(irrigation_type, 0.7)
-    
-    # Weather impact
-    weather_factor, _ = assess_weather_impact(crop, temperature, rainfall_level)
-    adjusted_yield *= weather_factor
-    
-    # Water quality impact
-    water_quality_factor, _ = assess_water_quality(water_ph, salinity_level)
-    adjusted_yield *= water_quality_factor
-    
-    # Calculate total yield
-    total_yield = adjusted_yield * farm_area
-    
-    return {
-        'per_acre': round(adjusted_yield, 2),
-        'total': round(total_yield, 2),
-        'weather_impact': round(weather_factor, 2),
-        'water_quality_impact': round(water_quality_factor, 2)
-    }
+                 water_usage, rotation_score, fertilizer_usage, pesticide_usage,
+                 temperature, rainfall_level,  # Add these parameters
+                 model, le_dict, scaler):
+    """Predict yield based on input parameters"""
+    try:
+        # Create input DataFrame with numerical values
+        input_data = pd.DataFrame({
+            'Current_Crop': [current_crop],
+            'Soil_Type': [soil_type],
+            'Season': [season],
+            'Fertilizer_Category': [fertilizer_category],
+            'Irrigation_Type': [irrigation_type],
+            'Organic_Matter_Content(%)': [float(organic_matter)],
+            'Soil_pH': [float(soil_ph)],
+            'Water_Usage(cubic meters)': [float(water_usage)],
+            'Rotation_Health_Score': [float(rotation_score)],
+            'Fertilizer_Used(tons)': [float(fertilizer_usage)],
+            'Pesticide_Used(kg)': [float(pesticide_usage)]
+        })
+        
+        # Encode categorical variables
+        categorical_cols = [
+            'Current_Crop',
+            'Soil_Type',
+            'Season',
+            'Fertilizer_Category',
+            'Irrigation_Type'
+        ]
+        
+        for col in categorical_cols:
+            input_data[col] = le_dict[col].transform(input_data[col])
+        
+        # Scale numerical features
+        numerical_cols = [
+            'Organic_Matter_Content(%)',
+            'Soil_pH',
+            'Water_Usage(cubic meters)',
+            'Rotation_Health_Score',
+            'Fertilizer_Used(tons)',
+            'Pesticide_Used(kg)'
+        ]
+        
+        input_data[numerical_cols] = scaler.transform(input_data[numerical_cols])
+        
+        # Calculate weather impact
+        weather_impact = calculate_weather_impact(temperature, rainfall_level)
+        
+        # Adjust yield prediction based on weather impact
+        predicted_yield = model.predict(input_data)[0] * weather_impact
+        
+        return {
+            'per_acre': round(predicted_yield, 2),
+            'total': round(predicted_yield * farm_area, 2),
+            'weather_impact': weather_impact
+        }
+        
+    except Exception as e:
+        print(f"Error in yield prediction: {str(e)}")
+        if 'input_data' in locals():
+            print(f"Input data types: {input_data.dtypes}")
+        raise
 
 def get_water_management_recommendation(crop, season, soil_type, irrigation_type, farm_area):
     """Generate water management recommendations"""
@@ -332,6 +490,18 @@ def assess_water_quality(water_ph, salinity_level):
     
     return ph_impact * salinity_impact, recommendations
 
+def initialize_models():
+    """Initialize and return trained models"""
+    yield_model, yield_le_dict, yield_scaler = train_yield_prediction_model()
+    crop_model, crop_le = train_crop_recommendation_model()
+    return {
+        'yield_model': yield_model,
+        'yield_le_dict': yield_le_dict,
+        'yield_scaler': yield_scaler,
+        'crop_model': crop_model,
+        'crop_le': crop_le
+    }
+
 def main():
     print("\n=== Integrated Sustainable Farming Recommendation System ===\n")
     
@@ -414,21 +584,49 @@ def main():
     
 
     print("\n4. Yield Prediction:")
+    # Initialize models for command-line usage
+    models = initialize_models()
+    
+    # Calculate numerical values
+    rotation_score = calculate_rotation_score(
+        current_crop, prev_crop1, prev_crop2, prev_crop3
+    )
+    
+    water_usage = calculate_water_usage(farm_area, irrigation_type)
+    
+    fertilizer_usage = calculate_fertilizer_usage(farm_area, fertilizer_category)
+    
+    pesticide_usage = calculate_pesticide_usage(farm_area, pesticide_category)
+    
+    # Make yield prediction
     yield_prediction = predict_yield(
-        current_crop, soil_type, season, organic_matter, soil_ph,
-        fertilizer_category, irrigation_type, farm_area,
-        temperature, rainfall_level, water_ph, salinity_level
+        current_crop=current_crop,
+        soil_type=soil_type,
+        season=season,
+        organic_matter=organic_matter,
+        soil_ph=soil_ph,
+        fertilizer_category=fertilizer_category,
+        irrigation_type=irrigation_type,
+        farm_area=farm_area,
+        water_usage=water_usage,
+        rotation_score=rotation_score,
+        fertilizer_usage=fertilizer_usage,
+        pesticide_usage=pesticide_usage,
+        temperature=temperature,
+        rainfall_level=rainfall_level,
+        model=models['yield_model'],
+        le_dict=models['yield_le_dict'],
+        scaler=models['yield_scaler']
     )
     print(f"- Estimated yield per acre: {yield_prediction['per_acre']} tons")
     print(f"- Total estimated yield: {yield_prediction['total']} tons")
     print(f"- Weather impact factor: {yield_prediction['weather_impact']}")
-    print(f"- Water quality impact factor: {yield_prediction['water_quality_impact']}")
+    print(f"  (Weather impact considers temperature and rainfall conditions)")
     
     _, weather_recs = assess_weather_impact(current_crop, temperature, rainfall_level)
     print("\nWeather-based Recommendations:")
     for rec in weather_recs:
         print(rec)
-
 
     _, water_quality_recs = assess_water_quality(water_ph, salinity_level)
     print("\nWater Quality Recommendations:")

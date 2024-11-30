@@ -8,10 +8,34 @@ from integrated_farm_recommendations import (
     irrigation_efficiency,
     crop_water_requirements,
     weather_impact,
-    water_quality_parameters
+    water_quality_parameters,
+    initialize_models,
+    calculate_water_usage,
+    calculate_rotation_score,
+    calculate_fertilizer_usage,
+    calculate_pesticide_usage
 )
 import plotly.express as px
 import plotly.graph_objects as go
+
+def initialize_models():
+    """Initialize all required models"""
+    try:
+        from integrated_farm_recommendations import train_yield_prediction_model
+        yield_model, yield_le, yield_scaler = train_yield_prediction_model()
+        
+        if yield_model is None or yield_le is None or yield_scaler is None:
+            st.error("Failed to initialize one or more models")
+            return None
+            
+        return {
+            'yield_model': yield_model,
+            'yield_le': yield_le,
+            'yield_scaler': yield_scaler
+        }
+    except Exception as e:
+        st.error(f"Error initializing models: {str(e)}")
+        return None
 
 def main():
     st.set_page_config(page_title="Sustainable Farming Advisor", layout="wide")
@@ -20,6 +44,20 @@ def main():
     
     tabs = st.tabs(["Farm Input", "Recommendations", "Analytics"])
     
+    # Initialize models at startup
+    if 'models' not in st.session_state:
+        models = initialize_models()
+        if models is not None:
+            st.session_state.models = models
+        else:
+            st.error("Failed to initialize models. Please check your data and model setup.")
+            return  # Exit if models aren't properly initialized
+    
+    # Check if models are properly initialized before proceeding
+    if st.session_state.models is None:
+        st.error("Models not properly initialized. Please refresh the page or check the setup.")
+        return
+        
     with tabs[0]:
         st.header("Farm Information")
         
@@ -196,29 +234,73 @@ def main():
             
             # 5. Yield Prediction
             with st.expander("📊 Yield Prediction", expanded=True):
-                yield_prediction = predict_yield(
-                    current_crop, soil_type, season, organic_matter, soil_ph,
-                    fertilizer_category, irrigation_type, farm_area,
-                    temperature, rainfall_level, water_ph, salinity_level
-                )
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown(f"**Estimated yield per acre:** {yield_prediction['per_acre']} tons")
-                    st.markdown(f"**Total estimated yield:** {yield_prediction['total']} tons")
-                    st.markdown(f"**Weather impact factor:** {yield_prediction['weather_impact']}")
-                    st.markdown(f"**Water quality impact factor:** {yield_prediction['water_quality_impact']}")
-                
-                with col2:
-                    # Impact factors visualization
-                    impact_data = pd.DataFrame({
-                        'Factor': ['Weather Impact', 'Water Quality'],
-                        'Impact': [yield_prediction['weather_impact'], 
-                                 yield_prediction['water_quality_impact']]
-                    })
-                    fig = px.bar(impact_data, x='Factor', y='Impact',
-                                title="Yield Impact Factors")
-                    st.plotly_chart(fig)
+                try:
+                    # Calculate required values first
+                    water_usage = calculate_water_usage(farm_area, irrigation_type)
+                    rotation_score = calculate_rotation_score(current_crop, prev_crop1, prev_crop2, prev_crop3)
+                    fertilizer_usage = calculate_fertilizer_usage(farm_area, fertilizer_category)
+                    pesticide_usage = calculate_pesticide_usage(farm_area, pesticide_category)
+                    
+                    yield_prediction = predict_yield(
+                        current_crop=current_crop,
+                        soil_type=soil_type,
+                        season=season,
+                        organic_matter=organic_matter,
+                        soil_ph=soil_ph,
+                        fertilizer_category=fertilizer_category,
+                        irrigation_type=irrigation_type,
+                        farm_area=farm_area,
+                        water_usage=water_usage,
+                        rotation_score=rotation_score,
+                        fertilizer_usage=fertilizer_usage,
+                        pesticide_usage=pesticide_usage,
+                        temperature=temperature,
+                        rainfall_level=rainfall_level,
+                        model=st.session_state.models['yield_model'],
+                        le_dict=st.session_state.models['yield_le'],
+                        scaler=st.session_state.models['yield_scaler']
+                    )
+                    
+                    # Display predictions only if successful
+                    if yield_prediction:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown(f"**Estimated yield per acre:** {yield_prediction['per_acre']} tons")
+                            st.markdown(f"**Total estimated yield:** {yield_prediction['total']} tons")
+                            st.markdown(f"**Weather impact factor:** {yield_prediction['weather_impact']}")
+                        
+                        with col2:
+                            # Yield prediction visualization
+                            fig = go.Figure(go.Indicator(
+                                mode="gauge+number",
+                                value=yield_prediction['per_acre'],
+                                title={'text': "Yield per Acre (tons)"},
+                                gauge={'axis': {'range': [0, 150]},
+                                       'bar': {'color': "green"},
+                                       'steps': [
+                                           {'range': [0, 50], 'color': "lightgray"},
+                                           {'range': [50, 100], 'color': "lightgreen"},
+                                           {'range': [100, 150], 'color': "darkgreen"}]}
+                            ))
+                            st.plotly_chart(fig)
+
+                            # Weather impact visualization
+                            fig = go.Figure(go.Indicator(
+                                mode="gauge+number",
+                                value=yield_prediction['weather_impact'] * 100,
+                                title={'text': "Weather Impact (%)"},
+                                gauge={'axis': {'range': [0, 100]},
+                                       'bar': {'color': "blue"},
+                                       'steps': [
+                                           {'range': [0, 33], 'color': "red"},
+                                           {'range': [33, 66], 'color': "yellow"},
+                                           {'range': [66, 100], 'color': "green"}]}
+                            ))
+                            st.plotly_chart(fig)
+                    
+                except Exception as e:
+                    st.error(f"Error in yield prediction: {str(e)}")
+                    st.error("Please check your input data and model setup.")
             
             # Additional Sustainable Practices
             with st.expander("🌍 Sustainable Practices", expanded=True):
